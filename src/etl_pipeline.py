@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv  # noqa: F401
 import os
+import shutil
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -26,8 +27,11 @@ NEIGHBORHOODS = [
     "Oakwood", "Old Town", "Riverside", "Suburban Park", "University District",
 ]
 
-OUTPUT_DIR   = ROOT / "output" / "by_neighborhood"
-OUTPUT_FILES = {hood: OUTPUT_DIR / f"{hood.replace(' ', '_').lower()}.csv" for hood in NEIGHBORHOODS}
+OUTPUT_DIR = ROOT / "output" / "by_neighborhood"
+OUTPUT_FILES = {
+    hood: OUTPUT_DIR / f"{hood.replace(' ', '_').lower()}.csv"
+    for hood in NEIGHBORHOODS
+}
 
 PG_TABLES = {hood: f"public.{hood.replace(' ', '_').lower()}" for hood in NEIGHBORHOODS}
 
@@ -51,24 +55,33 @@ def extract(spark: SparkSession, csv_path: str) -> DataFrame:
     )
 
     df = df.select(
-        F.col("house_id").cast("string"),
-        F.col("neighborhood").cast("string"),
-        F.col("price").cast("int"),
-        F.col("square_feet").cast("int"),
-        F.col("num_bedrooms").cast("int"),
-        F.col("num_bathrooms").cast("int"),
-        F.col("house_age").cast("int"),
-        F.col("garage_spaces").cast("int"),
-        F.col("lot_size_acres").cast("double"),
-        F.col("has_pool").cast("boolean"),
-        F.col("recently_renovated").cast("boolean"),
-        F.col("energy_rating").cast("string"),
-        F.col("location_score").cast("int"),
-        F.col("school_rating").cast("int"),
-        F.col("crime_rate").cast("int"),
-        F.col("distance_downtown_miles").cast("double"),
+        F.col("house_id").cast("string").alias("house_id"),
+        F.col("neighborhood").cast("string").alias("neighborhood"),
+        F.col("price").cast("int").alias("price"),
+        F.col("square_feet").cast("int").alias("square_feet"),
+        F.col("num_bedrooms").cast("int").alias("num_bedrooms"),
+        F.col("num_bathrooms").cast("int").alias("num_bathrooms"),
+        F.col("house_age").cast("int").alias("house_age"),
+        F.col("garage_spaces").cast("int").alias("garage_spaces"),
+        F.col("lot_size_acres").cast("double").alias("lot_size_acres"),
+        F.col("has_pool").cast("boolean").alias("has_pool"),
+        F.col("recently_renovated").cast("boolean").alias("recently_renovated"),
+        F.col("energy_rating").cast("string").alias("energy_rating"),
+        F.col("location_score").cast("int").alias("location_score"),
+        F.col("school_rating").cast("int").alias("school_rating"),
+        F.col("crime_rate").cast("int").alias("crime_rate"),
+        F.col("distance_downtown_miles").cast("int").alias("distance_downtown_miles"),
         F.to_date(F.col("sale_date"), "M/d/yy").alias("sale_date"),
-        F.col("days_on_market").cast("int"),
+        F.col("days_on_market").cast("int").alias("days_on_market"),
+        F.col("buyer_id").cast("string").alias("buyer_id"),
+        F.col("buyer_budget").cast("int").alias("buyer_budget"),
+        F.col("buyer_age_group").cast("string").alias("buyer_age_group"),
+        F.col("buyer_family_size").cast("int").alias("buyer_family_size"),
+        F.col("buyer_income_level").cast("string").alias("buyer_income_level"),
+        F.col("has_children").cast("boolean").alias("has_children"),
+        F.col("employment_type").cast("string").alias("employment_type"),
+        F.col("buyer_preference").cast("string").alias("buyer_preference"),
+        F.col("first_time_buyer").cast("boolean").alias("first_time_buyer"),
     )
 
     return df
@@ -76,33 +89,18 @@ def extract(spark: SparkSession, csv_path: str) -> DataFrame:
 
 def transform(df: DataFrame) -> dict[str, DataFrame]:
     """Split the data by neighborhood and save each as a separate CSV file."""
+    if OUTPUT_DIR.exists():
+        shutil.rmtree(OUTPUT_DIR)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     partitions: dict[str, DataFrame] = {}
-
-    columns = [
-        "house_id",
-        "neighborhood",
-        "price",
-        "square_feet",
-        "num_bedrooms",
-        "num_bathrooms",
-        "house_age",
-        "garage_spaces",
-        "lot_size_acres",
-        "has_pool",
-        "recently_renovated",
-        "energy_rating",
-        "location_score",
-        "school_rating",
-        "crime_rate",
-        "distance_downtown_miles",
-        "sale_date",
-        "days_on_market",
-    ]
+    columns = df.columns
 
     for hood in NEIGHBORHOODS:
-        hood_df = df.filter(F.col("neighborhood") == hood)
+        hood_df = (
+            df.filter(F.col("neighborhood") == hood)
+            .orderBy("house_id")
+        )
         partitions[hood] = hood_df
 
         rows = hood_df.collect()
@@ -112,26 +110,7 @@ def transform(df: DataFrame) -> dict[str, DataFrame]:
             writer.writerow(columns)
 
             for row in rows:
-                writer.writerow([
-                    row["house_id"],
-                    row["neighborhood"],
-                    row["price"],
-                    row["square_feet"],
-                    row["num_bedrooms"],
-                    row["num_bathrooms"],
-                    row["house_age"],
-                    row["garage_spaces"],
-                    row["lot_size_acres"],
-                    row["has_pool"],
-                    row["recently_renovated"],
-                    row["energy_rating"],
-                    row["location_score"],
-                    row["school_rating"],
-                    row["crime_rate"],
-                    row["distance_downtown_miles"],
-                    row["sale_date"],
-                    row["days_on_market"],
-                ])
+                writer.writerow([row[col] for col in columns])
 
     return partitions
 
@@ -147,7 +126,7 @@ def load(partitions: dict[str, DataFrame], jdbc_url: str, pg_props: dict) -> Non
             .jdbc(
                 url=jdbc_url,
                 table=table_name,
-                properties=pg_props
+                properties=pg_props,
             )
         )
 
@@ -161,21 +140,24 @@ def main() -> None:
         f"{os.getenv('PG_PORT', '5432')}/{os.environ['PG_DATABASE']}"
     )
     pg_props = {
-        "user":     os.environ["PG_USER"],
+        "user": os.environ["PG_USER"],
         "password": os.getenv("PG_PASSWORD", ""),
-        "driver":   "org.postgresql.Driver",
+        "driver": "org.postgresql.Driver",
     }
-    csv_path = str(ROOT / os.getenv("DATASET_DIR", "dataset") / os.getenv("DATASET_FILE", "historical_purchases.csv"))
+    csv_path = str(
+        ROOT
+        / os.getenv("DATASET_DIR", "dataset")
+        / os.getenv("DATASET_FILE", "historical_purchases.csv")
+    )
 
     spark = (
-        SparkSession.
-builder.appName("HouseSaleETL")
+        SparkSession.builder.appName("HouseSaleETL")
         .config("spark.jars.packages", "org.postgresql:postgresql:42.7.3")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
 
-    df         = extract(spark, csv_path)
+    df = extract(spark, csv_path)
     partitions = transform(df)
     load(partitions, jdbc_url, pg_props)
 
