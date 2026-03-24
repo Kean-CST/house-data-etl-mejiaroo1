@@ -11,12 +11,12 @@ Steps:
 from __future__ import annotations
 
 import csv  # noqa: F401
-import os  # noqa: F401
+import os
 from pathlib import Path
 
-from dotenv import load_dotenv  # noqa: F401
-from pyspark.sql import DataFrame, SparkSession  # noqa: F401
-from pyspark.sql import functions as F  # noqa: F401
+from dotenv import load_dotenv
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 
 # ── Predefined constants (do not modify) ──────────────────────────────────────
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,17 +43,113 @@ PG_COLUMN_SCHEMA = (
 
 def extract(spark: SparkSession, csv_path: str) -> DataFrame:
     """Load the CSV dataset into a PySpark DataFrame with correct data types."""
-    raise NotImplementedError
+    df = (
+        spark.read
+        .option("header", True)
+        .option("inferSchema", False)
+        .csv(csv_path)
+    )
+
+    df = df.select(
+        F.col("house_id").cast("string"),
+        F.col("neighborhood").cast("string"),
+        F.col("price").cast("int"),
+        F.col("square_feet").cast("int"),
+        F.col("num_bedrooms").cast("int"),
+        F.col("num_bathrooms").cast("int"),
+        F.col("house_age").cast("int"),
+        F.col("garage_spaces").cast("int"),
+        F.col("lot_size_acres").cast("double"),
+        F.col("has_pool").cast("boolean"),
+        F.col("recently_renovated").cast("boolean"),
+        F.col("energy_rating").cast("string"),
+        F.col("location_score").cast("int"),
+        F.col("school_rating").cast("int"),
+        F.col("crime_rate").cast("int"),
+        F.col("distance_downtown_miles").cast("double"),
+        F.to_date(F.col("sale_date"), "M/d/yy").alias("sale_date"),
+        F.col("days_on_market").cast("int"),
+    )
+
+    return df
 
 
 def transform(df: DataFrame) -> dict[str, DataFrame]:
     """Split the data by neighborhood and save each as a separate CSV file."""
-    raise NotImplementedError
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    partitions: dict[str, DataFrame] = {}
+
+    columns = [
+        "house_id",
+        "neighborhood",
+        "price",
+        "square_feet",
+        "num_bedrooms",
+        "num_bathrooms",
+        "house_age",
+        "garage_spaces",
+        "lot_size_acres",
+        "has_pool",
+        "recently_renovated",
+        "energy_rating",
+        "location_score",
+        "school_rating",
+        "crime_rate",
+        "distance_downtown_miles",
+        "sale_date",
+        "days_on_market",
+    ]
+
+    for hood in NEIGHBORHOODS:
+        hood_df = df.filter(F.col("neighborhood") == hood)
+        partitions[hood] = hood_df
+
+        rows = hood_df.collect()
+
+        with open(OUTPUT_FILES[hood], "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(columns)
+
+            for row in rows:
+                writer.writerow([
+                    row["house_id"],
+                    row["neighborhood"],
+                    row["price"],
+                    row["square_feet"],
+                    row["num_bedrooms"],
+                    row["num_bathrooms"],
+                    row["house_age"],
+                    row["garage_spaces"],
+                    row["lot_size_acres"],
+                    row["has_pool"],
+                    row["recently_renovated"],
+                    row["energy_rating"],
+                    row["location_score"],
+                    row["school_rating"],
+                    row["crime_rate"],
+                    row["distance_downtown_miles"],
+                    row["sale_date"],
+                    row["days_on_market"],
+                ])
+
+    return partitions
 
 
 def load(partitions: dict[str, DataFrame], jdbc_url: str, pg_props: dict) -> None:
     """Insert each neighborhood dataset into its own PostgreSQL table."""
-    raise NotImplementedError
+    for hood, hood_df in partitions.items():
+        table_name = PG_TABLES[hood]
+
+        (
+            hood_df.write
+            .mode("overwrite")
+            .jdbc(
+                url=jdbc_url,
+                table=table_name,
+                properties=pg_props
+            )
+        )
 
 
 # ── Main (do not modify) ───────────────────────────────────────────────────────
@@ -72,7 +168,8 @@ def main() -> None:
     csv_path = str(ROOT / os.getenv("DATASET_DIR", "dataset") / os.getenv("DATASET_FILE", "historical_purchases.csv"))
 
     spark = (
-        SparkSession.builder.appName("HouseSaleETL")
+        SparkSession.
+builder.appName("HouseSaleETL")
         .config("spark.jars.packages", "org.postgresql:postgresql:42.7.3")
         .getOrCreate()
     )
